@@ -1,0 +1,25 @@
+# 环境变量
+.env
+
+# Air热部署临时目录
+tmp/
+
+# Go编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试文件
+*.test
+*.out
+
+# 依赖目录
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
