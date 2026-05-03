@@ -5,11 +5,11 @@ import { createChart } from 'lightweight-charts'
 const COLORS = {
   background: '#000000',
   text: '#D1D4DC',
-  up: '#FF5252',      // 上涨红色
-  down: '#00FFFF',    // 下跌青色
-  ma5: '#FFEB3B',     // MA5黄色
-  ma10: '#FFFFFF',    // MA10白色
-  volumeMa5: '#9C27B0', // 成交量MA5紫色
+  up: '#FF5252',
+  down: '#00FFFF',
+  ma5: '#FFEB3B',
+  ma10: '#FFFFFF',
+  volumeMa5: '#9C27B0',
   grid: '#1e222d',
   crosshair: '#758696'
 }
@@ -56,15 +56,16 @@ function App() {
   const ma5SeriesRef = useRef(null)
   const ma10SeriesRef = useRef(null)
   const volumeMa5SeriesRef = useRef(null)
-  const wsRef = useRef(null)
   const [isConnected, setIsConnected] = useState(false)
   const dataRef = useRef([])
+  const crosshairMainRef = useRef(null)
+  const crosshairVolumeRef = useRef(null)
 
   // 初始化图表
   const initChart = useCallback(() => {
     if (!chartContainerRef.current || !volumeContainerRef.current) return
 
-    // 主图配置
+    // 图表配置
     const chartOptions = {
       layout: {
         background: { color: COLORS.background },
@@ -77,9 +78,7 @@ function App() {
       crosshair: {
         mode: 1,
         vertLine: {
-          color: COLORS.crosshair,
-          width: 1,
-          style: 2,
+          visible: false,
           labelBackgroundColor: COLORS.text
         },
         horzLine: {
@@ -92,20 +91,41 @@ function App() {
       rightPriceScale: {
         borderColor: COLORS.grid
       },
+      leftPriceScale: {
+        visible: false
+      },
       timeScale: {
         borderColor: COLORS.grid,
         timeVisible: true,
-        secondsVisible: false
+        secondsVisible: false,
+        tickMarkFormatter: (time) => {
+          const date = new Date(time * 1000)
+          return date.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            hour: '2-digit',
+            minute: '2-digit'
+          })
+        }
       },
       localization: {
         dateFormat: 'MM-dd',
         timeFormatter: (timestamp) => {
           const date = new Date(timestamp * 1000)
-          const month = String(date.getMonth() + 1).padStart(2, '0')
-          const day = String(date.getDate()).padStart(2, '0')
-          const hours = String(date.getHours()).padStart(2, '0')
-          const minutes = String(date.getMinutes()).padStart(2, '0')
-          return `${month}-${day} ${hours}:${minutes}`
+          return date.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+          }).replace(/\//g, '-')
+        },
+        dateFormatter: (timestamp) => {
+          const date = new Date(timestamp * 1000)
+          return date.toLocaleDateString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            month: '2-digit',
+            day: '2-digit'
+          }).replace(/\//g, '-')
         }
       }
     }
@@ -124,6 +144,40 @@ function App() {
       width: volumeContainerRef.current.clientWidth
     })
 
+    // 创建跨图表的十字垂直线
+    const mainPane = chartContainerRef.current.parentElement
+    const volumePane = volumeContainerRef.current.parentElement
+    mainPane.style.position = 'relative'
+    volumePane.style.position = 'relative'
+
+    crosshairMainRef.current = document.createElement('div')
+    crosshairMainRef.current.style.cssText = `position:absolute;top:0;bottom:0;width:1px;background:none;border-left:1px dashed ${COLORS.crosshair};pointer-events:none;display:none;z-index:100;`
+    mainPane.appendChild(crosshairMainRef.current)
+
+    crosshairVolumeRef.current = document.createElement('div')
+    crosshairVolumeRef.current.style.cssText = `position:absolute;top:0;bottom:0;width:1px;background:none;border-left:1px dashed ${COLORS.crosshair};pointer-events:none;display:none;z-index:100;`
+    volumePane.appendChild(crosshairVolumeRef.current)
+
+    // 鼠标移动同步十字线
+    const handleMouseMove = (e, container, line1, line2) => {
+      const rect = container.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      line1.style.left = x + 'px'
+      line1.style.display = 'block'
+      line2.style.left = x + 'px'
+      line2.style.display = 'block'
+    }
+
+    const handleMouseLeave = () => {
+      crosshairMainRef.current.style.display = 'none'
+      crosshairVolumeRef.current.style.display = 'none'
+    }
+
+    chartContainerRef.current.addEventListener('mousemove', (e) => handleMouseMove(e, chartContainerRef.current, crosshairMainRef.current, crosshairVolumeRef.current))
+    chartContainerRef.current.addEventListener('mouseleave', handleMouseLeave)
+    volumeContainerRef.current.addEventListener('mousemove', (e) => handleMouseMove(e, volumeContainerRef.current, crosshairVolumeRef.current, crosshairMainRef.current))
+    volumeContainerRef.current.addEventListener('mouseleave', handleMouseLeave)
+
     // K线系列
     candleSeriesRef.current = chartRef.current.addCandlestickSeries({
       upColor: COLORS.up,
@@ -139,10 +193,9 @@ function App() {
     // 成交量系列
     volumeSeriesRef.current = volumeChartRef.current.addHistogramSeries({
       color: COLORS.up,
-      priceFormat: {
-        type: 'volume'
-      },
-      priceScaleId: ''
+      priceFormat: { type: 'volume' },
+      lastValueVisible: true,
+      priceLineVisible: false
     })
 
     // MA5
@@ -164,14 +217,15 @@ function App() {
     // 成交量MA5
     volumeMa5SeriesRef.current = volumeChartRef.current.addLineSeries({
       color: COLORS.volumeMa5,
-      lineWidth: 1
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false
     })
 
-    // 同步两个图表的时间范围
+    // 同步时间范围
     chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(range => {
       volumeChartRef.current.timeScale().setVisibleLogicalRange(range)
     })
-
     volumeChartRef.current.timeScale().subscribeVisibleLogicalRangeChange(range => {
       chartRef.current.timeScale().setVisibleLogicalRange(range)
     })
@@ -189,30 +243,22 @@ function App() {
         })
       }
     }
-
     window.addEventListener('resize', handleResize)
 
     return () => {
       window.removeEventListener('resize', handleResize)
-      if (chartRef.current) {
-        chartRef.current.remove()
-      }
-      if (volumeChartRef.current) {
-        volumeChartRef.current.remove()
-      }
+      if (chartRef.current) chartRef.current.remove()
+      if (volumeChartRef.current) volumeChartRef.current.remove()
     }
   }, [])
 
   // 更新图表数据
   const updateChart = useCallback((data) => {
     if (!candleSeriesRef.current || data.length === 0) return
-
     dataRef.current = data
 
-    // 更新K线
     candleSeriesRef.current.setData(data)
 
-    // 更新成交量
     const volumeData = data.map(d => ({
       time: d.time,
       value: d.volume,
@@ -220,15 +266,22 @@ function App() {
     }))
     volumeSeriesRef.current.setData(volumeData)
 
-    // 更新MA5和MA10
     const ma5Data = calculateMA(data, 5)
     const ma10Data = calculateMA(data, 10)
     ma5SeriesRef.current.setData(ma5Data)
     ma10SeriesRef.current.setData(ma10Data)
 
-    // 更新成交量MA5
     const volumeMa5Data = calculateVolumeMA(data, 5)
     volumeMa5SeriesRef.current.setData(volumeMa5Data)
+
+    setTimeout(() => {
+      if (chartRef.current && volumeChartRef.current) {
+        const range = chartRef.current.timeScale().getVisibleLogicalRange()
+        if (range) {
+          volumeChartRef.current.timeScale().setVisibleLogicalRange(range)
+        }
+      }
+    }, 100)
   }, [])
 
   // 追加新K线
@@ -240,21 +293,16 @@ function App() {
     const lastTick = data[lastIndex]
 
     if (lastTick && lastTick.time === tick.time) {
-      // 更新当前K线
       data[lastIndex] = tick
       candleSeriesRef.current.update(tick)
-
-      // 更新成交量
       volumeSeriesRef.current.update({
         time: tick.time,
         value: tick.volume,
         color: tick.close >= tick.open ? COLORS.up : COLORS.down
       })
     } else {
-      // 添加新K线
       data.push(tick)
       candleSeriesRef.current.update(tick)
-
       volumeSeriesRef.current.update({
         time: tick.time,
         value: tick.volume,
@@ -262,13 +310,11 @@ function App() {
       })
     }
 
-    // 更新MA线
     const ma5Data = calculateMA(data, 5)
     const ma10Data = calculateMA(data, 10)
     ma5SeriesRef.current.setData(ma5Data)
     ma10SeriesRef.current.setData(ma10Data)
 
-    // 更新成交量MA5
     const volumeMa5Data = calculateVolumeMA(data, 5)
     volumeMa5SeriesRef.current.setData(volumeMa5Data)
   }, [])
@@ -276,44 +322,30 @@ function App() {
   // WebSocket连接
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:8080/ws')
-    wsRef.current = ws
-
     ws.onopen = () => {
       console.log('WebSocket已连接')
       setIsConnected(true)
     }
-
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
-
         if (message.type === 'history') {
-          // 接收历史数据
           updateChart(message.history)
         } else if (message.time) {
-          // 接收实时K线
           appendTick(message)
         }
       } catch (error) {
         console.error('解析消息失败:', error)
       }
     }
-
-    ws.onerror = (error) => {
-      console.error('WebSocket错误:', error)
-    }
-
+    ws.onerror = (error) => console.error('WebSocket错误:', error)
     ws.onclose = () => {
       console.log('WebSocket已断开')
       setIsConnected(false)
     }
-
-    return () => {
-      ws.close()
-    }
+    return () => ws.close()
   }, [updateChart, appendTick])
 
-  // 初始化图表
   useEffect(() => {
     const cleanup = initChart()
     return cleanup
@@ -327,7 +359,6 @@ function App() {
       display: 'flex',
       flexDirection: 'column'
     }}>
-      {/* 顶部状态栏 */}
       <div style={{
         height: '40px',
         borderBottom: '1px solid #1e222d',
@@ -345,20 +376,12 @@ function App() {
         </span>
       </div>
 
-      {/* 主图区域 - K线图 */}
       <div style={{ height: 'calc(75% - 20px)', position: 'relative' }}>
-        <div
-          ref={chartContainerRef}
-          style={{ width: '100%', height: '100%' }}
-        />
+        <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
       </div>
 
-      {/* 副图区域 - 成交量 */}
       <div style={{ height: '25%', position: 'relative' }}>
-        <div
-          ref={volumeContainerRef}
-          style={{ width: '100%', height: '100%' }}
-        />
+        <div ref={volumeContainerRef} style={{ width: '100%', height: '100%' }} />
       </div>
     </div>
   )
