@@ -101,9 +101,9 @@ var market *Market
 func loadHistoryFromDB() []Tick {
 	rows, err := db.Query(`
 		SELECT UNIX_TIMESTAMP(datetime) as time, open, high, low, close, volume
-		FROM trade
-		ORDER BY datetime DESC
-		LIMIT 500
+		FROM trade_1min
+		WHERE DATE(datetime) >= DATE_SUB(CURDATE(), INTERVAL 5 DAY)
+		ORDER BY datetime ASC
 	`)
 	if err != nil {
 		log.Println("查询数据库失败:", err)
@@ -120,11 +120,6 @@ func loadHistoryFromDB() []Tick {
 			continue
 		}
 		ticks = append(ticks, t)
-	}
-
-	// 反转顺序，使时间从早到晚
-	for i, j := 0, len(ticks)-1; i < j; i, j = i+1, j-1 {
-		ticks[i], ticks[j] = ticks[j], ticks[i]
 	}
 
 	log.Println("从数据库加载了", len(ticks), "条K线数据")

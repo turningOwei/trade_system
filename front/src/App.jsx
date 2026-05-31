@@ -57,6 +57,8 @@ function App() {
   const ma10SeriesRef = useRef(null)
   const volumeMa5SeriesRef = useRef(null)
   const [isConnected, setIsConnected] = useState(false)
+  const [showMA5, setShowMA5] = useState(true)
+  const [showMA10, setShowMA10] = useState(true)
   const dataRef = useRef([])
   const crosshairMainRef = useRef(null)
   const crosshairVolumeRef = useRef(null)
@@ -203,7 +205,8 @@ function App() {
       color: COLORS.ma5,
       lineWidth: 1,
       lastValueVisible: false,
-      priceLineVisible: false
+      priceLineVisible: false,
+      visible: showMA5
     })
 
     // MA10
@@ -211,7 +214,8 @@ function App() {
       color: COLORS.ma10,
       lineWidth: 1,
       lastValueVisible: false,
-      priceLineVisible: false
+      priceLineVisible: false,
+      visible: showMA10
     })
 
     // 成交量MA5
@@ -351,6 +355,20 @@ function App() {
     return cleanup
   }, [initChart])
 
+  // MA5显示/隐藏切换
+  useEffect(() => {
+    if (ma5SeriesRef.current) {
+      ma5SeriesRef.current.applyOptions({ visible: showMA5 })
+    }
+  }, [showMA5])
+
+  // MA10显示/隐藏切换
+  useEffect(() => {
+    if (ma10SeriesRef.current) {
+      ma10SeriesRef.current.applyOptions({ visible: showMA10 })
+    }
+  }, [showMA10])
+
   return (
     <div style={{
       width: '100%',
@@ -374,6 +392,45 @@ function App() {
         }}>
           {isConnected ? '● 已连接' : '○ 未连接'}
         </span>
+      </div>
+
+      {/* 指标工具栏 */}
+      <div style={{
+        height: '30px',
+        borderBottom: '1px solid #1e222d',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 20px'
+      }}>
+        <button
+          onClick={() => setShowMA5(!showMA5)}
+          style={{
+            padding: '4px 12px',
+            fontSize: '12px',
+            border: '1px solid ' + (showMA5 ? COLORS.ma5 : COLORS.grid),
+            backgroundColor: showMA5 ? COLORS.ma5 : 'transparent',
+            color: showMA5 ? '#000' : COLORS.text,
+            cursor: 'pointer',
+            borderRadius: '4px'
+          }}
+        >
+          MA5
+        </button>
+        <button
+          onClick={() => setShowMA10(!showMA10)}
+          style={{
+            marginLeft: '10px',
+            padding: '4px 12px',
+            fontSize: '12px',
+            border: '1px solid ' + (showMA10 ? COLORS.ma10 : COLORS.grid),
+            backgroundColor: showMA10 ? COLORS.ma10 : 'transparent',
+            color: showMA10 ? '#000' : COLORS.text,
+            cursor: 'pointer',
+            borderRadius: '4px'
+          }}
+        >
+          MA10
+        </button>
       </div>
 
       <div style={{ height: 'calc(75% - 20px)', position: 'relative' }}>
