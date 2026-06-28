@@ -6,7 +6,15 @@ export default defineConfig({
   server: {
     port: 4000,
     proxy: {
+      '/refresh': {
+        target: 'http://localhost:8080',
+        changeOrigin: true
+      },
       '/history': {
+        target: 'http://localhost:8080',
+        changeOrigin: true
+      },
+      '/grid-search': {
         target: 'http://localhost:8080',
         changeOrigin: true
       },
