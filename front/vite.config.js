@@ -18,6 +18,18 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true
       },
+      '/kama': {
+        target: 'http://localhost:8080',
+        changeOrigin: true
+      },
+      '/rsi': {
+        target: 'http://localhost:8080',
+        changeOrigin: true
+      },
+      '/rsi-grid-search': {
+        target: 'http://localhost:8080',
+        changeOrigin: true
+      },
       '/ws': {
         target: 'ws://localhost:8080',
         ws: true

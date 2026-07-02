@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
-import { calculateKAMA, calculateVolumeMA } from './indicators'
+import { calculateKAMA, calculateVolumeMA, calculateRSI } from './indicators'
 
 // 颜色配置
 const COLORS = {
@@ -22,12 +22,19 @@ function App() {
   const volumeChartRef = useRef(null)
   const candleSeriesRef = useRef(null)
   const volumeSeriesRef = useRef(null)
-  const ma5SeriesRef = useRef(null)
-  const ma10SeriesRef = useRef(null)
   const volumeMa5SeriesRef = useRef(null)
+  const kamaBullSeriesRef = useRef(null)
+  const kamaBearSeriesRef = useRef(null)
+  const rsiSeriesRef = useRef(null)
   const [isConnected, setIsConnected] = useState(false)
-  const [showMA5, setShowMA5] = useState(true)
-  const [showMA10, setShowMA10] = useState(true)
+  const [showKamaTrend, setShowKamaTrend] = useState(false)
+  const showKamaTrendRef = useRef(false)
+  const [showRSI, setShowRSI] = useState(false)
+  const showRSIRef = useRef(false)
+  const [rsiPeriod, setRsiPeriod] = useState(14)
+  const rsiPeriodRef = useRef(14)
+  const [rsiGridResults, setRsiGridResults] = useState(null)
+  const [rsiGridLoading, setRsiGridLoading] = useState(false)
   const [gridResults, setGridResults] = useState(null)
   const [gridLoading, setGridLoading] = useState(false)
   const [showBestSignals, setShowBestSignals] = useState(false)
@@ -47,6 +54,7 @@ function App() {
   const dataRef = useRef([])
   const crosshairMainRef = useRef(null)
   const crosshairVolumeRef = useRef(null)
+  const rsiLabelRef = useRef(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(350)
   const draggingRef = useRef(false)
@@ -123,6 +131,7 @@ function App() {
     // 创建主图
     chartRef.current = createChart(chartContainerRef.current, {
       ...chartOptions,
+      autoSize: true,
       height: chartContainerRef.current.clientHeight,
       width: chartContainerRef.current.clientWidth
     })
@@ -130,6 +139,7 @@ function App() {
     // 创建成交量图
     volumeChartRef.current = createChart(volumeContainerRef.current, {
       ...chartOptions,
+      autoSize: true,
       height: volumeContainerRef.current.clientHeight,
       width: volumeContainerRef.current.clientWidth
     })
@@ -147,6 +157,28 @@ function App() {
     crosshairVolumeRef.current = document.createElement('div')
     crosshairVolumeRef.current.style.cssText = `position:absolute;top:0;bottom:0;width:1px;background:none;border-left:1px dashed ${COLORS.crosshair};pointer-events:none;display:none;z-index:100;`
     volumePane.appendChild(crosshairVolumeRef.current)
+
+    // RSI 数值标签
+    rsiLabelRef.current = document.createElement('div')
+    rsiLabelRef.current.style.cssText = `position:absolute;background:#FF9800;color:#000;padding:2px 6px;border-radius:3px;font-size:11px;font-weight:bold;pointer-events:none;display:none;z-index:101;white-space:nowrap;`
+    mainPane.appendChild(rsiLabelRef.current)
+
+    // 十字线订阅 RSI 数值 - 在十字线光标位置附近浮动显示
+    chartRef.current.subscribeCrosshairMove(param => {
+      if (!rsiLabelRef.current || !showRSIRef.current || !rsiSeriesRef.current) {
+        if (rsiLabelRef.current) rsiLabelRef.current.style.display = 'none'
+        return
+      }
+      const data = param.seriesData.get(rsiSeriesRef.current)
+      if (data && data.value !== undefined && param.point) {
+        rsiLabelRef.current.textContent = data.value.toFixed(1)
+        rsiLabelRef.current.style.display = 'block'
+        rsiLabelRef.current.style.left = (param.point.x + 10) + 'px'
+        rsiLabelRef.current.style.top = (param.point.y - 20) + 'px'
+      } else {
+        rsiLabelRef.current.style.display = 'none'
+      }
+    })
 
     // 鼠标移动同步十字线
     const handleMouseMove = (e, container, line1, line2) => {
@@ -177,7 +209,8 @@ function App() {
       wickUpColor: COLORS.up,
       wickDownColor: COLORS.down,
       lastValueVisible: false,
-      priceLineVisible: false
+      priceLineVisible: false,
+      priceScaleId: 'right'
     })
     candleSeries.current = candleSeriesRef.current
 
@@ -189,22 +222,33 @@ function App() {
       priceLineVisible: false
     })
 
-    // MA5
-    ma5SeriesRef.current = chartRef.current.addLineSeries({
-      color: COLORS.ma5,
+    // KAMA 趋势线 - 多头（红色）
+    kamaBullSeriesRef.current = chartRef.current.addLineSeries({
+      color: COLORS.up,
       lineWidth: 1,
       lastValueVisible: false,
       priceLineVisible: false,
-      visible: showMA5
+      visible: false
     })
 
-    // MA10
-    ma10SeriesRef.current = chartRef.current.addLineSeries({
-      color: COLORS.ma10,
+    // KAMA 趋势线 - 空头（青色）
+    kamaBearSeriesRef.current = chartRef.current.addLineSeries({
+      color: COLORS.down,
       lineWidth: 1,
       lastValueVisible: false,
       priceLineVisible: false,
-      visible: showMA10
+      visible: false
+    })
+
+    // RSI - 橙色，使用独立价格刻度
+    rsiSeriesRef.current = chartRef.current.addLineSeries({
+      color: '#FF9800',
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      visible: false,
+      priceScaleId: 'rsi',
+      crosshairMarkerVisible: true
     })
 
     // 成交量MA5
@@ -223,23 +267,12 @@ function App() {
       chartRef.current.timeScale().setVisibleLogicalRange(range)
     })
 
-    // 窗口大小调整
-    const handleResize = () => {
-      if (chartRef.current && volumeChartRef.current) {
-        chartRef.current.applyOptions({
-          height: chartContainerRef.current.clientHeight,
-          width: chartContainerRef.current.clientWidth
-        })
-        volumeChartRef.current.applyOptions({
-          height: volumeContainerRef.current.clientHeight,
-          width: volumeContainerRef.current.clientWidth
-        })
-      }
-    }
-    window.addEventListener('resize', handleResize)
+    // autoSize 已启用，无需手动 resize
 
     return () => {
-      window.removeEventListener('resize', handleResize)
+      if (rsiLabelRef.current && rsiLabelRef.current.parentNode) {
+        rsiLabelRef.current.parentNode.removeChild(rsiLabelRef.current)
+      }
       if (chartRef.current) chartRef.current.remove()
       if (volumeChartRef.current) volumeChartRef.current.remove()
     }
@@ -259,14 +292,6 @@ function App() {
     }))
     volumeSeriesRef.current.setData(volumeData)
 
-    const fast = selectedFastRef.current || 5
-    const slow = selectedSlowRef.current || 10
-    const slowSmooth = selectedSlowSmoothRef.current || 30
-    const maFastData = calculateKAMA(data, fast, 2, slowSmooth)
-    const maSlowData = calculateKAMA(data, slow, 2, slowSmooth)
-    ma5SeriesRef.current.setData(maFastData)
-    ma10SeriesRef.current.setData(maSlowData)
-
     const volumeMa5Data = calculateVolumeMA(data, 5)
     volumeMa5SeriesRef.current.setData(volumeMa5Data)
 
@@ -277,6 +302,8 @@ function App() {
           volumeChartRef.current.timeScale().setVisibleLogicalRange(range)
         }
       }
+      // 同步更新 KAMA 线
+      updateKamaLines(data)
     }, 100)
   }, [])
 
@@ -306,28 +333,57 @@ function App() {
       })
     }
 
-    const fast = selectedFastRef.current || 5
-    const slow = selectedSlowRef.current || 10
-    const slowSmooth = selectedSlowSmoothRef.current || 30
-    const maFastData = calculateKAMA(data, fast, 2, slowSmooth)
-    const maSlowData = calculateKAMA(data, slow, 2, slowSmooth)
-    ma5SeriesRef.current.setData(maFastData)
-    ma10SeriesRef.current.setData(maSlowData)
-
     const volumeMa5Data = calculateVolumeMA(data, 5)
     volumeMa5SeriesRef.current.setData(volumeMa5Data)
+
+    // 同步更新 KAMA 线
+    updateKamaLines(data)
   }, [])
 
-  // 根据选定周期重新计算 MA 线
+  // 根据选定周期重新计算 KAMA 线
   const recalculateMA = useCallback((fast, slow, slowSmooth) => {
     const data = dataRef.current
     if (!data.length) return
-    const maFastData = calculateKAMA(data, fast, 2, slowSmooth)
-    const maSlowData = calculateKAMA(data, slow, 2, slowSmooth)
-    ma5SeriesRef.current?.setData(maFastData)
-    ma10SeriesRef.current?.setData(maSlowData)
+    // 更新引用参数
+    selectedFastRef.current = fast
+    selectedSlowSmoothRef.current = slowSmooth
+    // 更新 KAMA 趋势线
+    if (showKamaTrendRef.current) {
+      updateKamaLines(data)
+    }
     const volumeMa5Data = calculateVolumeMA(data, 5)
     volumeMa5SeriesRef.current?.setData(volumeMa5Data)
+  }, [])
+
+  // 更新 KAMA 趋势线（多空分段）
+  const updateKamaLines = useCallback((data) => {
+    if (showKamaTrendRef.current && data.length > 0) {
+      const period = selectedFastRef.current || 10
+      const slowSmooth = selectedSlowSmoothRef.current || 30
+      const kamaData = calculateKAMA(data, period, 2, slowSmooth)
+      // 分段：价格 > KAMA = 多头（红），价格 < KAMA = 空头（青）
+      const bullData = []
+      const bearData = []
+      for (const item of kamaData) {
+        const timeMap = new Map()
+        for (const d of data) timeMap.set(d.time, d)
+        const candle = timeMap.get(item.time)
+        if (candle && candle.close !== undefined) {
+          if (candle.close >= item.value) {
+            bullData.push(item)
+          } else {
+            bearData.push(item)
+          }
+        }
+      }
+      kamaBullSeriesRef.current?.setData(bullData)
+      kamaBearSeriesRef.current?.setData(bearData)
+    }
+    if (showRSIRef.current && rsiSeriesRef.current) {
+      const period = rsiPeriodRef.current
+      const rsiData = calculateRSI(data, period)
+      rsiSeriesRef.current.setData(rsiData)
+    }
   }, [])
 
   // 刷新数据
@@ -339,6 +395,72 @@ function App() {
     } catch (e) {
       console.error('刷新失败:', e)
     }
+  }, [])
+
+  // KAMA 趋势线切换
+  const toggleKama = useCallback(() => {
+    const next = !showKamaTrend
+    setShowKamaTrend(next)
+    showKamaTrendRef.current = next
+    if (next && dataRef.current.length > 0) {
+      const period = selectedFastRef.current || 10
+      const slowSmooth = selectedSlowSmoothRef.current || 30
+      const kamaData = calculateKAMA(dataRef.current, period, 2, slowSmooth)
+      const bullData = []
+      const bearData = []
+      const timeMap = new Map()
+      for (const d of dataRef.current) timeMap.set(d.time, d)
+      for (const item of kamaData) {
+        const candle = timeMap.get(item.time)
+        if (candle && candle.close !== undefined) {
+          if (candle.close >= item.value) {
+            bullData.push(item)
+          } else {
+            bearData.push(item)
+          }
+        }
+      }
+      kamaBullSeriesRef.current?.setData(bullData)
+      kamaBearSeriesRef.current?.setData(bearData)
+    } else if (!next) {
+      kamaBullSeriesRef.current?.setData([])
+      kamaBearSeriesRef.current?.setData([])
+    }
+  }, [showKamaTrend])
+
+  // RSI 切换
+  const toggleRSI = useCallback(() => {
+    const next = !showRSI
+    setShowRSI(next)
+    showRSIRef.current = next
+    if (next && rsiSeriesRef.current && dataRef.current.length > 0) {
+      const period = rsiPeriodRef.current
+      const rsiData = calculateRSI(dataRef.current, period)
+      rsiSeriesRef.current.setData(rsiData)
+    }
+  }, [showRSI])
+
+  // RSI 网格搜索
+  const handleRSIGridSearch = useCallback(async () => {
+    setRsiGridLoading(true)
+    try {
+      const res = await fetch('/rsi-grid-search')
+      const data = await res.json()
+      setRsiGridResults(data)
+      setRsiPeriod(data.best.period)
+      rsiPeriodRef.current = data.best.period
+      // 如果 RSI 已开启，用最优参数重新计算
+      if (showRSIRef.current && rsiSeriesRef.current && data.rsiData) {
+        const rsiData = data.rsiData
+          .map((v, i) => v !== null && !isNaN(v) ? { time: dataRef.current[i].time, value: v } : null)
+          .filter(Boolean)
+        rsiSeriesRef.current.setData(rsiData)
+      }
+      console.log('RSI网格搜索完成，最优周期:', data.best.period, '波动率:', data.best.volatility.toFixed(2))
+    } catch (e) {
+      console.error('RSI网格搜索失败:', e)
+    }
+    setRsiGridLoading(false)
   }, [])
 
   // 网格搜索
@@ -364,8 +486,10 @@ function App() {
       selectedSlowRef.current = data.best.slow
       setSelectedSlowSmooth(data.best.slowSmooth || 30)
       selectedSlowSmoothRef.current = data.best.slowSmooth || 30
-      // 重新计算 KAMA 线
-      recalculateMA(data.best.fast, data.best.slow, data.best.slowSmooth || 30)
+      // 延迟重算 KAMA 线，等 sidebar 动画和图表 resize 完成后再执行
+      setTimeout(() => {
+        recalculateMA(data.best.fast, data.best.slow, data.best.slowSmooth || 30)
+      }, 400)
     } catch (e) {
       console.error('网格搜索失败:', e)
     }
@@ -544,7 +668,6 @@ function App() {
       // 清除 markers 并强制重绘
       const range = chartRef.current?.timeScale().getVisibleLogicalRange()
       candleSeriesRef.current?.setMarkers([])
-      // 恢复视图范围触发重绘
       if (range) {
         chartRef.current?.timeScale().setVisibleLogicalRange(range)
       }
@@ -584,19 +707,38 @@ function App() {
     return cleanup
   }, [initChart])
 
-  // MA5显示/隐藏切换
+  // 每分钟自动刷新数据
   useEffect(() => {
-    if (ma5SeriesRef.current) {
-      ma5SeriesRef.current.applyOptions({ visible: showMA5 })
-    }
-  }, [showMA5])
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch('/refresh')
+        const data = await res.json()
+        console.log('自动刷新成功，加载了', data.count, '条K线数据')
+      } catch (e) {
+        console.error('自动刷新失败:', e)
+      }
+    }, 60000) // 60秒
+    return () => clearInterval(timer)
+  }, [])
 
-  // MA10显示/隐藏切换
+  // KAMA 趋势线显示/隐藏切换
   useEffect(() => {
-    if (ma10SeriesRef.current) {
-      ma10SeriesRef.current.applyOptions({ visible: showMA10 })
+    if (kamaBullSeriesRef.current) {
+      kamaBullSeriesRef.current.applyOptions({ visible: showKamaTrend })
     }
-  }, [showMA10])
+    if (kamaBearSeriesRef.current) {
+      kamaBearSeriesRef.current.applyOptions({ visible: showKamaTrend })
+    }
+    showKamaTrendRef.current = showKamaTrend
+  }, [showKamaTrend])
+
+  // RSI显示/隐藏切换
+  useEffect(() => {
+    if (rsiSeriesRef.current) {
+      rsiSeriesRef.current.applyOptions({ visible: showRSI })
+      showRSIRef.current = showRSI
+    }
+  }, [showRSI])
 
   // 侧边栏拖拽调整宽度
   useEffect(() => {
@@ -618,46 +760,18 @@ function App() {
     }
   }, [])
 
-  // 拖拽过程中触发图表重绘
-  useEffect(() => {
-    if (!sidebarOpen || !draggingRef.current) return
-    if (chartRef.current && chartContainerRef.current) {
-      chartRef.current.applyOptions({
-        height: chartContainerRef.current.clientHeight,
-        width: chartContainerRef.current.clientWidth
-      })
-    }
-    if (volumeChartRef.current && volumeContainerRef.current) {
-      volumeChartRef.current.applyOptions({
-        height: volumeContainerRef.current.clientHeight,
-        width: volumeContainerRef.current.clientWidth
-      })
-    }
-  }, [sidebarWidth])
+  // autoSize 已处理拖拽时的 resize
 
-  // 侧边栏开关/宽度变化时触发图表重绘
+  // 网格搜索后：确保时间轴正确显示
   useEffect(() => {
-    setTimeout(() => {
+    if (!gridResults || !sidebarOpen) return
+    const timer = setTimeout(() => {
       if (chartRef.current) {
-        const container = chartContainerRef.current
-        if (container) {
-          chartRef.current.applyOptions({
-            height: container.clientHeight,
-            width: container.clientWidth
-          })
-        }
+        chartRef.current.timeScale().fitContent()
       }
-      if (volumeChartRef.current) {
-        const container = volumeContainerRef.current
-        if (container) {
-          volumeChartRef.current.applyOptions({
-            height: container.clientHeight,
-            width: container.clientWidth
-          })
-        }
-      }
-    }, 50)
-  }, [sidebarOpen, sidebarWidth])
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [gridResults, sidebarOpen])
 
   return (
     <div style={{
@@ -696,33 +810,18 @@ function App() {
         flexShrink: 0
       }}>
         <button
-          onClick={() => setShowMA5(!showMA5)}
+          onClick={toggleKama}
           style={{
             padding: '4px 12px',
             fontSize: '12px',
-            border: '1px solid ' + (showMA5 ? COLORS.ma5 : COLORS.grid),
-            backgroundColor: showMA5 ? COLORS.ma5 : 'transparent',
-            color: showMA5 ? '#000' : COLORS.text,
+            border: '1px solid ' + (showKamaTrend ? COLORS.text : COLORS.grid),
+            backgroundColor: showKamaTrend ? COLORS.text : 'transparent',
+            color: showKamaTrend ? '#000' : COLORS.text,
             cursor: 'pointer',
             borderRadius: '4px'
           }}
         >
-          KAMA{selectedFast || 5}
-        </button>
-        <button
-          onClick={() => setShowMA10(!showMA10)}
-          style={{
-            marginLeft: '10px',
-            padding: '4px 12px',
-            fontSize: '12px',
-            border: '1px solid ' + (showMA10 ? COLORS.ma10 : COLORS.grid),
-            backgroundColor: showMA10 ? COLORS.ma10 : 'transparent',
-            color: showMA10 ? '#000' : COLORS.text,
-            cursor: 'pointer',
-            borderRadius: '4px'
-          }}
-        >
-          KAMA{selectedSlow || 10}
+          KAMA
         </button>
         <button
           onClick={handleGridSearch}
@@ -741,6 +840,38 @@ function App() {
         >
           {gridLoading ? '搜索中...' : '网格搜索'}
         </button>
+        <button
+          onClick={toggleRSI}
+          style={{
+            marginLeft: '10px',
+            padding: '4px 12px',
+            fontSize: '12px',
+            border: '1px solid ' + (showRSI ? '#FF9800' : COLORS.grid),
+            backgroundColor: showRSI ? '#FF9800' : 'transparent',
+            color: showRSI ? '#000' : COLORS.text,
+            cursor: 'pointer',
+            borderRadius: '4px'
+          }}
+        >
+          RSI
+        </button>
+        <button
+          onClick={handleRSIGridSearch}
+          disabled={rsiGridLoading}
+          style={{
+            marginLeft: '10px',
+            padding: '4px 12px',
+            fontSize: '12px',
+            border: '1px solid ' + (rsiGridResults ? '#FF9800' : COLORS.grid),
+            backgroundColor: rsiGridResults ? '#FF9800' : 'transparent',
+            color: rsiGridResults ? '#000' : COLORS.text,
+            cursor: rsiGridLoading ? 'default' : 'pointer',
+            borderRadius: '4px',
+            opacity: rsiGridLoading ? 0.6 : 1
+          }}
+        >
+          {rsiGridLoading ? '搜索中...' : 'RSI网格搜索'}
+        </button>
         <button onClick={handleRefresh}
           style={{
             marginLeft: '10px',
@@ -754,135 +885,233 @@ function App() {
           }}>
           刷新
         </button>
-        {gridResults && !sidebarOpen && (
-          <button onClick={() => setSidebarOpen(true)}
-            style={{
-              marginLeft: '10px',
-              padding: '4px 12px',
-              fontSize: '12px',
-              border: '1px solid ' + COLORS.ma5,
-              backgroundColor: 'transparent',
-              color: COLORS.ma5,
-              cursor: 'pointer',
-              borderRadius: '4px'
-            }}>
-            📊 查看结果
-          </button>
-        )}
       </div>
 
       {/* 主内容区：侧边栏 + 图表 */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        {/* 左侧侧边栏 */}
-        {gridResults && sidebarOpen && (
-          <>
-            <div style={{
-              width: sidebarWidth + 'px',
-              minWidth: sidebarWidth + 'px',
+        {/* 左侧侧边栏（平滑折叠动画） */}
+        {gridResults && (
+          <div
+            style={{
+              width: sidebarOpen ? sidebarWidth + 'px' : '0px',
+              minWidth: sidebarOpen ? sidebarWidth + 'px' : '0px',
               height: '100%',
               backgroundColor: '#131722',
               borderRight: '1px solid #2a2e39',
               display: 'flex',
               flexDirection: 'column',
-              flexShrink: 0
-            }}>
-              {/* 侧边栏头部 */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #2a2e39', flexShrink: 0 }}>
-                <span style={{ fontSize: '16px', fontWeight: 'bold', color: COLORS.text }}>网格搜索结果</span>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button onClick={toggleLong}
-                    style={{ padding: '3px 8px', fontSize: '11px', border: '1px solid ' + (showLongTrades ? COLORS.up : COLORS.grid), backgroundColor: showBestSignals ? (showLongTrades ? COLORS.up : 'transparent') : COLORS.grid, color: showBestSignals ? (showLongTrades ? '#fff' : COLORS.text) : '#555', cursor: showBestSignals ? 'pointer' : 'not-allowed', borderRadius: '4px', opacity: showBestSignals ? 1 : 0.5 }}>
-                    多
-                  </button>
-                  <button onClick={toggleShort}
-                    style={{ padding: '3px 8px', fontSize: '11px', border: '1px solid ' + (showShortTrades ? COLORS.down : COLORS.grid), backgroundColor: showBestSignals ? (showShortTrades ? COLORS.down : 'transparent') : COLORS.grid, color: showBestSignals ? (showShortTrades ? '#000' : COLORS.text) : '#555', cursor: showBestSignals ? 'pointer' : 'not-allowed', borderRadius: '4px', opacity: showBestSignals ? 1 : 0.5 }}>
-                    空
-                  </button>
-                  <button onClick={toggleBestSignals}
-                    style={{ padding: '3px 8px', fontSize: '11px', border: '1px solid ' + (showBestSignals ? COLORS.ma5 : COLORS.grid), backgroundColor: showBestSignals ? COLORS.ma5 : 'transparent', color: showBestSignals ? '#000' : COLORS.text, cursor: 'pointer', borderRadius: '4px' }}>
-                    {showBestSignals ? '隐藏标记' : '标记买卖点'}
-                  </button>
-                  <button onClick={() => { setGridResults(null); setShowBestSignals(false); showBestSignalsRef.current = false; gridResultsRef.current = null; setSidebarOpen(false); showLongTradesRef.current = true; showShortTradesRef.current = true; setShowLongTrades(true); setShowShortTrades(true) }}
-                    style={{ padding: '3px 8px', fontSize: '14px', border: '1px solid #333', backgroundColor: 'transparent', color: COLORS.text, cursor: 'pointer', borderRadius: '4px' }}>✕</button>
-                </div>
-              </div>
-
-              {/* 最优参数摘要 */}
-              <div style={{ padding: '12px 16px', backgroundColor: '#1e222d', borderBottom: '1px solid #2a2e39', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
-                <span style={{ color: COLORS.text, fontSize: '12px' }}>最优参数：</span>
-                <span style={{ color: COLORS.ma5, fontWeight: 'bold', fontSize: '13px' }}>KAMA ER{gridResults.best.fast}/{gridResults.best.slow} S={gridResults.best.slowSmooth || 30}</span>
-                <span style={{ color: gridResults.best.totalReturn >= 0 ? COLORS.up : COLORS.down, fontWeight: 'bold', fontSize: '14px' }}>
-                  {(gridResults.best.totalReturn >= 0 ? '+' : '') + (gridResults.best.totalReturn * 100).toFixed(2)}%
-                </span>
-                <span style={{ color: COLORS.text, fontSize: '11px' }}>交易 {gridResults.best.numTrades} 次 | 胜率 {(gridResults.best.winRate * 100).toFixed(1)}%</span>
-              </div>
-
-              {/* 结果表格 */}
-              <div style={{ flex: 1, overflow: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid #2a2e39', position: 'sticky', top: 0, backgroundColor: '#131722' }}>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'center', width: '30px' }}>选择</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>排名</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>快线ER</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>慢线ER</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>S平滑</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>期望值</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>总收益率</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>交易次数</th>
-                      <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>胜率</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {gridResults.results.map((r, i) => {
-                      const isSelected = selectedFast === r.fast && selectedSlow === r.slow && selectedSlowSmooth === (r.slowSmooth || 30)
-                      return (
-                        <tr key={r.fast + '-' + r.slow + '-' + (r.slowSmooth || 30)} style={{
-                          borderBottom: '1px solid #1e222d',
-                          backgroundColor: isSelected ? '#2a2e39' : (i === 0 ? '#1e222d' : 'transparent'),
-                          cursor: 'pointer'
-                        }} onClick={() => selectParamRow(r.fast, r.slow, r.slowSmooth || 30)}>
-                          <td style={{ padding: '6px', textAlign: 'center' }}>
-                            <input type="radio" name="paramSelect" checked={isSelected} readOnly />
-                          </td>
-                          <td style={{ padding: '6px', color: isSelected ? COLORS.ma5 : (i === 0 ? COLORS.ma5 : COLORS.text), textAlign: 'center', fontWeight: i === 0 ? 'bold' : 'normal' }}>{i + 1}</td>
-                          <td style={{ padding: '6px', color: COLORS.ma5, textAlign: 'center' }}>{r.fast}</td>
-                          <td style={{ padding: '6px', color: COLORS.ma10, textAlign: 'center' }}>{r.slow}</td>
-                          <td style={{ padding: '6px', color: COLORS.text, textAlign: 'center' }}>{r.slowSmooth || 30}</td>
-                          <td style={{ padding: '6px', textAlign: 'right', color: r.expectancy >= 0 ? COLORS.up : COLORS.down, fontWeight: 'bold' }}>
-                            {(r.expectancy >= 0 ? '+' : '') + (r.expectancy * 100).toFixed(2)}%
-                          </td>
-                          <td style={{ padding: '6px', textAlign: 'right', color: r.totalReturn >= 0 ? COLORS.up : COLORS.down, fontWeight: 'bold' }}>
-                            {(r.totalReturn >= 0 ? '+' : '') + (r.totalReturn * 100).toFixed(2)}%
-                          </td>
-                          <td style={{ padding: '6px', color: COLORS.text, textAlign: 'center' }}>{r.numTrades}</td>
-                          <td style={{ padding: '6px', color: COLORS.text, textAlign: 'right' }}>{(r.winRate * 100).toFixed(1)}%</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+              overflow: 'hidden',
+              flexShrink: 0,
+              transition: 'width 0.25s ease, min-width 0.25s ease',
+            }}
+          >
+            {/* 侧边栏头部 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #2a2e39', flexShrink: 0 }}>
+              <span style={{ fontSize: '16px', fontWeight: 'bold', color: COLORS.text }}>网格搜索结果</span>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button onClick={toggleLong}
+                  style={{ padding: '3px 8px', fontSize: '11px', border: '1px solid ' + (showLongTrades ? COLORS.up : COLORS.grid), backgroundColor: showBestSignals ? (showLongTrades ? COLORS.up : 'transparent') : COLORS.grid, color: showBestSignals ? (showLongTrades ? '#fff' : COLORS.text) : '#555', cursor: showBestSignals ? 'pointer' : 'not-allowed', borderRadius: '4px', opacity: showBestSignals ? 1 : 0.5 }}>
+                  多
+                </button>
+                <button onClick={toggleShort}
+                  style={{ padding: '3px 8px', fontSize: '11px', border: '1px solid ' + (showShortTrades ? COLORS.down : COLORS.grid), backgroundColor: showBestSignals ? (showShortTrades ? COLORS.down : 'transparent') : COLORS.grid, color: showBestSignals ? (showShortTrades ? '#000' : COLORS.text) : '#555', cursor: showBestSignals ? 'pointer' : 'not-allowed', borderRadius: '4px', opacity: showBestSignals ? 1 : 0.5 }}>
+                  空
+                </button>
+                <button onClick={toggleBestSignals}
+                  style={{ padding: '3px 8px', fontSize: '11px', border: '1px solid ' + (showBestSignals ? COLORS.ma5 : COLORS.grid), backgroundColor: showBestSignals ? COLORS.ma5 : 'transparent', color: showBestSignals ? '#000' : COLORS.text, cursor: 'pointer', borderRadius: '4px' }}>
+                  {showBestSignals ? '隐藏标记' : '标记买卖点'}
+                </button>
+                <button onClick={() => { setGridResults(null); setShowBestSignals(false); showBestSignalsRef.current = false; gridResultsRef.current = null; setSidebarOpen(false); showLongTradesRef.current = true; showShortTradesRef.current = true; setShowLongTrades(true); setShowShortTrades(true) }}
+                  style={{ padding: '3px 8px', fontSize: '14px', border: '1px solid #333', backgroundColor: 'transparent', color: COLORS.text, cursor: 'pointer', borderRadius: '4px' }}>✕</button>
               </div>
             </div>
-            {/* 拖拽调整宽度的边缘 */}
+
+            {/* 最优参数摘要 */}
+            <div style={{ padding: '12px 16px', backgroundColor: '#1e222d', borderBottom: '1px solid #2a2e39', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
+              <span style={{ color: COLORS.text, fontSize: '12px' }}>最优参数：</span>
+              <span style={{ color: COLORS.ma5, fontWeight: 'bold', fontSize: '13px' }}>KAMA ER{gridResults.best.fast}/{gridResults.best.slow} S={gridResults.best.slowSmooth || 30}</span>
+              <span style={{ color: gridResults.best.totalReturn >= 0 ? COLORS.up : COLORS.down, fontWeight: 'bold', fontSize: '14px' }}>
+                {(gridResults.best.totalReturn >= 0 ? '+' : '') + (gridResults.best.totalReturn * 100).toFixed(2)}%
+              </span>
+              <span style={{ color: COLORS.text, fontSize: '11px' }}>交易 {gridResults.best.numTrades} 次 | 胜率 {(gridResults.best.winRate * 100).toFixed(1)}%</span>
+            </div>
+
+            {/* 结果表格 */}
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #2a2e39', position: 'sticky', top: 0, backgroundColor: '#131722' }}>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center', width: '30px' }}>选择</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>排名</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>快线ER</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>慢线ER</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>S平滑</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>期望值</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>总收益率</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>交易次数</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>胜率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gridResults.results.map((r, i) => {
+                    const isSelected = selectedFast === r.fast && selectedSlow === r.slow && selectedSlowSmooth === (r.slowSmooth || 30)
+                    return (
+                      <tr key={r.fast + '-' + r.slow + '-' + (r.slowSmooth || 30)} style={{
+                        borderBottom: '1px solid #1e222d',
+                        backgroundColor: isSelected ? '#2a2e39' : (i === 0 ? '#1e222d' : 'transparent'),
+                        cursor: 'pointer'
+                      }} onClick={() => selectParamRow(r.fast, r.slow, r.slowSmooth || 30)}>
+                        <td style={{ padding: '6px', textAlign: 'center' }}>
+                          <input type="radio" name="paramSelect" checked={isSelected} readOnly />
+                        </td>
+                        <td style={{ padding: '6px', color: isSelected ? COLORS.ma5 : (i === 0 ? COLORS.ma5 : COLORS.text), textAlign: 'center', fontWeight: i === 0 ? 'bold' : 'normal' }}>{i + 1}</td>
+                        <td style={{ padding: '6px', color: COLORS.ma5, textAlign: 'center' }}>{r.fast}</td>
+                        <td style={{ padding: '6px', color: COLORS.ma10, textAlign: 'center' }}>{r.slow}</td>
+                        <td style={{ padding: '6px', color: COLORS.text, textAlign: 'center' }}>{r.slowSmooth || 30}</td>
+                        <td style={{ padding: '6px', textAlign: 'right', color: r.expectancy >= 0 ? COLORS.up : COLORS.down, fontWeight: 'bold' }}>
+                          {(r.expectancy >= 0 ? '+' : '') + (r.expectancy * 100).toFixed(2)}%
+                        </td>
+                        <td style={{ padding: '6px', textAlign: 'right', color: r.totalReturn >= 0 ? COLORS.up : COLORS.down, fontWeight: 'bold' }}>
+                          {(r.totalReturn >= 0 ? '+' : '') + (r.totalReturn * 100).toFixed(2)}%
+                        </td>
+                        <td style={{ padding: '6px', color: COLORS.text, textAlign: 'center' }}>{r.numTrades}</td>
+                        <td style={{ padding: '6px', color: COLORS.text, textAlign: 'right' }}>{(r.winRate * 100).toFixed(1)}%</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* RSI 网格搜索结果 */}
+        {rsiGridResults && (
+          <div
+            style={{
+              width: '350px',
+              height: '100%',
+              backgroundColor: '#131722',
+              borderRight: '1px solid #2a2e39',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              flexShrink: 0,
+            }}
+          >
+            {/* 头部 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #2a2e39', flexShrink: 0 }}>
+              <span style={{ fontSize: '16px', fontWeight: 'bold', color: COLORS.text }}>RSI网格搜索</span>
+              <button onClick={() => setRsiGridResults(null)}
+                style={{ padding: '3px 8px', fontSize: '14px', border: '1px solid #333', backgroundColor: 'transparent', color: COLORS.text, cursor: 'pointer', borderRadius: '4px' }}>✕</button>
+            </div>
+
+            {/* 最优参数摘要 */}
+            <div style={{ padding: '12px 16px', backgroundColor: '#1e222d', borderBottom: '1px solid #2a2e39', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
+              <span style={{ color: COLORS.text, fontSize: '12px' }}>最优周期：</span>
+              <span style={{ color: '#FF9800', fontWeight: 'bold', fontSize: '13px' }}>RSI({rsiGridResults.best.period})</span>
+              <span style={{ color: COLORS.text, fontSize: '11px' }}>波动率 {rsiGridResults.best.volatility.toFixed(2)}</span>
+              <span style={{ color: COLORS.text, fontSize: '11px' }}>超买 {rsiGridResults.best.overboughtCount} 次</span>
+              <span style={{ color: COLORS.text, fontSize: '11px' }}>超卖 {rsiGridResults.best.oversoldCount} 次</span>
+            </div>
+
+            {/* 结果表格 */}
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #2a2e39', position: 'sticky', top: 0, backgroundColor: '#131722' }}>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>排名</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>周期</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>平均RSI</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'right' }}>波动率</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>超买</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center' }}>超卖</th>
+                    <th style={{ padding: '8px', color: '#787b86', textAlign: 'center', width: '30px' }}>选择</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rsiGridResults.results.map((r, i) => {
+                    const isSelected = rsiPeriod === r.period
+                    return (
+                      <tr key={r.period} style={{
+                        borderBottom: '1px solid #1e222d',
+                        backgroundColor: isSelected ? '#2a2e39' : (i === 0 ? '#1e222d' : 'transparent'),
+                        cursor: 'pointer'
+                      }} onClick={() => {
+                        setRsiPeriod(r.period)
+                        rsiPeriodRef.current = r.period
+                        if (showRSIRef.current && rsiSeriesRef.current && dataRef.current.length > 0) {
+                          const rsiData = calculateRSI(dataRef.current, r.period)
+                          rsiSeriesRef.current.setData(rsiData)
+                        }
+                      }}>
+                        <td style={{ padding: '6px', color: i === 0 ? '#FF9800' : COLORS.text, textAlign: 'center', fontWeight: i === 0 ? 'bold' : 'normal' }}>{i + 1}</td>
+                        <td style={{ padding: '6px', color: '#FF9800', textAlign: 'center' }}>{r.period}</td>
+                        <td style={{ padding: '6px', color: COLORS.text, textAlign: 'right' }}>{r.avgRSI.toFixed(1)}</td>
+                        <td style={{ padding: '6px', color: COLORS.text, textAlign: 'right', fontWeight: 'bold' }}>{r.volatility.toFixed(2)}</td>
+                        <td style={{ padding: '6px', color: COLORS.up, textAlign: 'center' }}>{r.overboughtCount}</td>
+                        <td style={{ padding: '6px', color: COLORS.down, textAlign: 'center' }}>{r.oversoldCount}</td>
+                        <td style={{ padding: '6px', textAlign: 'center' }}>
+                          <input type="radio" name="rsiParamSelect" checked={isSelected} readOnly />
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* 分割线（带折叠箭头） */}
+        {gridResults && (
+          <div
+            onMouseDown={() => {
+              draggingRef.current = true
+              document.body.style.cursor = 'col-resize'
+              document.body.style.userSelect = 'none'
+            }}
+            style={{
+              width: '4px',
+              cursor: 'col-resize',
+              backgroundColor: '#2a2e39',
+              position: 'relative',
+              zIndex: 100,
+              flexShrink: 0,
+              transition: 'background-color 0.15s',
+            }}
+            onMouseOver={(e) => e.currentTarget.style.backgroundColor = COLORS.ma5}
+            onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#2a2e39'}
+          >
+            {/* 折叠/展开按钮 */}
             <div
-              onMouseDown={() => {
-                draggingRef.current = true
-                document.body.style.cursor = 'col-resize'
-                document.body.style.userSelect = 'none'
+              onClick={(e) => {
+                e.stopPropagation()
+                setSidebarOpen(!sidebarOpen)
               }}
               style={{
-                width: '4px',
-                cursor: 'col-resize',
-                backgroundColor: '#2a2e39',
-                position: 'relative',
-                zIndex: 100,
-                flexShrink: 0
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: '16px',
+                height: '32px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '4px',
+                backgroundColor: '#1e222d',
+                color: '#888',
+                fontSize: '10px',
+                cursor: 'pointer',
+                transition: 'color 0.15s, background-color 0.15s',
               }}
-              onMouseOver={(e) => e.currentTarget.style.backgroundColor = COLORS.ma5}
-              onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#2a2e39'}
-            />
-          </>
+              onMouseOver={(e) => { e.currentTarget.style.color = COLORS.ma5; e.currentTarget.style.backgroundColor = '#2a2e39'; }}
+              onMouseOut={(e) => { e.currentTarget.style.color = '#888'; e.currentTarget.style.backgroundColor = '#1e222d'; }}
+            >
+              {sidebarOpen ? '◀' : '▶'}
+            </div>
+          </div>
         )}
 
         {/* 图表区域 */}

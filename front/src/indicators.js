@@ -130,3 +130,47 @@ export function calculateFastSlowMA(data, fastPeriod, slowPeriod) {
     slow: calculateMA(data, slowPeriod)
   }
 }
+
+/**
+ * 计算相对强弱指数（RSI）
+ * @param {Array<{time: number, close: number}>} data - K线数据数组
+ * @param {number} period - 计算周期（默认14）
+ * @returns {Array<{time: number, value: number}>} RSI数据数组
+ */
+export function calculateRSI(data, period = 14) {
+  const n = data.length
+  if (n < period + 1) return []
+
+  const result = []
+  const closes = data.map(d => d.close)
+  const times = data.map(d => d.time)
+
+  // 前 period 个为 NaN
+  let avgGain = 0, avgLoss = 0
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1]
+    if (change > 0) avgGain += change
+    else avgLoss += -change
+  }
+  avgGain /= period
+  avgLoss /= period
+
+  // 第一个 RSI
+  let rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+  result.push({ time: times[period], value: rsi })
+
+  // Wilder 平滑
+  for (let i = period + 1; i < n; i++) {
+    const change = closes[i] - closes[i - 1]
+    const gain = change > 0 ? change : 0
+    const loss = change < 0 ? -change : 0
+
+    avgGain = (avgGain * (period - 1) + gain) / period
+    avgLoss = (avgLoss * (period - 1) + loss) / period
+
+    rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+    result.push({ time: times[i], value: rsi })
+  }
+
+  return result
+}

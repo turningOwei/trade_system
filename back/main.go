@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -372,6 +373,49 @@ func backtest(ticks []Tick, fastPeriod, slowPeriod, slowSmooth int) (float64, in
 	return totalReturn, numTrades, winRate, expectancy, trades
 }
 
+// KAMAResponse KAMA 计算响应
+type KAMAResponse struct {
+	Fast []float64 `json:"fast"`
+	Slow []float64 `json:"slow"`
+}
+
+// handleKAMA 计算 KAMA 快慢线
+func handleKAMA(c *gin.Context) {
+	market.mu.RLock()
+	ticks := market.ticks
+	market.mu.RUnlock()
+
+	if len(ticks) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无可用数据"})
+		return
+	}
+
+	// 解析参数
+	fastPeriod := 5
+	slowPeriod := 10
+	slowSmooth := 30
+
+	if v := c.Query("fast"); v != "" {
+		fmt.Sscanf(v, "%d", &fastPeriod)
+	}
+	if v := c.Query("slow"); v != "" {
+		fmt.Sscanf(v, "%d", &slowPeriod)
+	}
+	if v := c.Query("slowSmooth"); v != "" {
+		fmt.Sscanf(v, "%d", &slowSmooth)
+	}
+
+	closes := make([]float64, len(ticks))
+	for i := range ticks {
+		closes[i] = ticks[i].Close
+	}
+
+	fastKAMA := util.CalculateKAMA(closes, fastPeriod, 2, slowSmooth)
+	slowKAMA := util.CalculateKAMA(closes, slowPeriod, 2, slowSmooth)
+
+	c.JSON(http.StatusOK, KAMAResponse{Fast: fastKAMA, Slow: slowKAMA})
+}
+
 // handleGridSearch 处理网格搜索请求
 func handleGridSearch(c *gin.Context) {
 	market.mu.RLock()
@@ -434,6 +478,109 @@ func handleGridSearch(c *gin.Context) {
 	})
 }
 
+// RSIGridResponse RSI 网格搜索响应
+type RSIGridResponse struct {
+	Results []util.RSIGridResult `json:"results"`
+	Best    util.RSIGridResult   `json:"best"`
+	RSIData []float64            `json:"rsiData"` // 最优参数下的 RSI 值
+}
+
+// handleRSI 计算 RSI
+func handleRSI(c *gin.Context) {
+	market.mu.RLock()
+	ticks := market.ticks
+	market.mu.RUnlock()
+
+	if len(ticks) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无可用数据"})
+		return
+	}
+
+	period := 14
+	if v := c.Query("period"); v != "" {
+		fmt.Sscanf(v, "%d", &period)
+	}
+
+	closes := make([]float64, len(ticks))
+	for i := range ticks {
+		closes[i] = ticks[i].Close
+	}
+
+	rsi := util.CalculateRSI(closes, period)
+	// 将 NaN 转为 null 以便 JSON 序列化
+	rsiJSON := make([]interface{}, len(rsi))
+	for i, v := range rsi {
+		if math.IsNaN(v) {
+			rsiJSON[i] = nil
+		} else {
+			rsiJSON[i] = v
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"rsi": rsiJSON})
+}
+
+// handleRSIGridSearch RSI 网格搜索
+func handleRSIGridSearch(c *gin.Context) {
+	market.mu.RLock()
+	ticks := market.ticks
+	market.mu.RUnlock()
+
+	if len(ticks) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无可用数据"})
+		return
+	}
+
+	closes := make([]float64, len(ticks))
+	for i := range ticks {
+		closes[i] = ticks[i].Close
+	}
+
+	var allResults []util.RSIGridResult
+	var bestResult util.RSIGridResult
+	bestVolatility := -1.0
+
+	// 搜索 RSI 周期 5~30
+	for period := 5; period <= 30; period++ {
+		result := util.AnalyzeRSI(closes, period)
+		allResults = append(allResults, result)
+
+		// 以 RSI 波动率（标准差）最高为最优（最能捕捉市场变化）
+		if result.Volatility > bestVolatility {
+			bestVolatility = result.Volatility
+			bestResult = result
+		}
+	}
+
+	// 按波动率降序排序
+	sort.Slice(allResults, func(i, j int) bool {
+		return allResults[i].Volatility > allResults[j].Volatility
+	})
+
+	// 取最优参数的 RSI 数据
+	bestRSI := util.CalculateRSI(closes, bestResult.Period)
+	// 将 NaN 转为 null 以便 JSON 序列化
+	rsiDataJSON := make([]interface{}, len(bestRSI))
+	for i, v := range bestRSI {
+		if math.IsNaN(v) {
+			rsiDataJSON[i] = nil
+		} else {
+			rsiDataJSON[i] = v
+		}
+	}
+
+	// 取前20
+	topN := 20
+	if len(allResults) < topN {
+		topN = len(allResults)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"results": allResults[:topN],
+		"best":    bestResult,
+		"rsiData": rsiDataJSON,
+	})
+}
+
 func main() {
 	// 加载配置
 	config = loadConfig()
@@ -463,6 +610,9 @@ func main() {
 	r.GET("/history", getHistory)
 	r.GET("/ws", handleWebSocket)
 	r.GET("/grid-search", handleGridSearch)
+	r.GET("/kama", handleKAMA)
+	r.GET("/rsi", handleRSI)
+	r.GET("/rsi-grid-search", handleRSIGridSearch)
 	r.GET("/refresh", refreshData)
 
 	log.Println("服务器启动在 :" + config.ServerPort)
